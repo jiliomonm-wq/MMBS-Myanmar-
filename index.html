@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="my">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POS System (Offline Ready)</title>
+  <link rel="manifest" href="manifest.json">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; font-family: system-ui, -apple-system, sans-serif; }
+    body { margin: 0; background: #f8fafc; color: #1e293b; padding: 15px; }
+    .card { background: white; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 15px; }
+    .status-bar { font-size: 13px; font-weight: bold; margin-bottom: 10px; display: flex; justify-content: space-between; }
+    .online { color: #16a34a; }
+    .offline { color: #dc2626; }
+    button { background: #2563eb; color: white; border: none; padding: 10px 14px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    button:disabled { background: #94a3b8; }
+    input { width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; font-size: 14px; }
+    th { background: #f1f5f9; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <div class="status-bar">
+      <span>အခြေအနေ: <span id="netStatus" class="online">● Online</span></span>
+      <span>စင့်ခ်မလုပ်ရသေးသော အရောင်း: <span id="unsyncedCount">0</span> ခု</span>
+    </div>
+  </div>
+
+  <!-- Login Section -->
+  <div id="authSection" class="card">
+    <h3 style="margin-top:0;">အကောင့်ဝင်ရန်</h3>
+    <input type="email" id="email" placeholder="အီးမေးလ် ရိုက်ထည့်ပါ">
+    <input type="password" id="password" placeholder="စကားဝှက် ရိုက်ထည့်ပါ">
+    <button onclick="login()">Login</button>
+  </div>
+
+  <!-- Main POS App Section -->
+  <div id="appSection" class="card" style="display:none;">
+    <h3 style="margin-top:0;">အရောင်း စာရင်းသွင်းရန် (POS)</h3>
+    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+      <input type="text" id="pName" placeholder="ပစ္စည်းအမည်" style="flex: 2;">
+      <input type="number" id="pPrice" placeholder="ဈေးနှုန်း" style="flex: 1;">
+      <input type="number" id="pQty" placeholder="အရေအတွက်" value="1" style="flex: 1;">
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button onclick="recordSale()">အရောင်း သိမ်းဆည်းမည်</button>
+      <button onclick="syncOfflineSales()" style="background:#059669;">Manual Sync</button>
+    </div>
+
+    <h4 style="margin-bottom: 6px; margin-top: 20px;">သိမ်းဆည်းထားသော မှတ်တမ်းများ (Local View)</h4>
+    <table>
+      <thead>
+        <tr>
+          <th>ပစ္စည်း</th>
+          <th>ဈေးနှုန်း</th>
+          <th>အရေအတွက်</th>
+          <th>စုစုပေါင်း</th>
+          <th>အခြေအနေ</th>
+        </tr>
+      </thead>
+      <tbody id="salesTableBody"></tbody>
+    </table>
+  </div>
+
+  <script>
+    // Supabase Configuration
+    const SUPABASE_URL = "https://kbjjzdkpxvinlgwbhrzp.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_O69tVRXhyHxNz8j5hl48Tg_WLzI6RLZ";
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Register Service Worker for PWA / Offline Usage
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js');
+    }
+
+    // Network Status Monitoring
+    window.addEventListener('online', updateNetworkStatus);
+    window.addEventListener('offline', updateNetworkStatus);
+
+    function updateNetworkStatus() {
+      const netStatus = document.getElementById('netStatus');
+      if (navigator.onLine) {
+        netStatus.innerText = "● Online";
+        netStatus.className = "online";
+        syncOfflineSales(); // လိုင်းပြန်ရချိန်တွင် Supabase သို့ အလိုအလျောက် sync ပို့ပေးမည်
+      } else {
+        netStatus.innerText = "● Offline";
+        netStatus.className = "offline";
+      }
+    }
+
+    // Login Authentication
+    async function login() {
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        alert("Login မှားယွင်းနေပါသည်: " + error.message);
+      } else {
+        document.getElementById('authSection').style.display = 'none';
+        document.getElementById('appSection').style.display = 'block';
+        loadSalesData();
+      }
+    }
+
+    // အရောင်းမှတ်တမ်း အရင်ဆုံး ဖုန်းထဲသိမ်းခြင်း (Local-First)
+    function recordSale() {
+      const name = document.getElementById('pName').value;
+      const price = parseFloat(document.getElementById('pPrice').value) || 0;
+      const qty = parseInt(document.getElementById('pQty').value) || 1;
+      const total = price * qty;
+
+      if (!name) return alert("ပစ္စည်းအမည် ထည့်ပါ");
+
+      const newSale = {
+        id: crypto.randomUUID(),
+        name,
+        price,
+        qty,
+        total,
+        synced: false,
+        created_at: new Date().toISOString()
+      };
+
+      const localSales = JSON.parse(localStorage.getItem('pos_sales') || '[]');
+      localSales.push(newSale);
+      localStorage.setItem('pos_sales', JSON.stringify(localSales));
+
+      document.getElementById('pName').value = '';
+      document.getElementById('pPrice').value = '';
+      document.getElementById('pQty').value = '1';
+      loadSalesData();
+
+      if (navigator.onLine) {
+        syncOfflineSales();
+      }
+    }
+
+    // စာရင်းဇယား ဆွဲတင်ပြသခြင်း
+    function loadSalesData() {
+      const localSales = JSON.parse(localStorage.getItem('pos_sales') || '[]');
+      const tbody = document.getElementById('salesTableBody');
+      tbody.innerHTML = '';
+
+      let unsynced = 0;
+      localSales.slice().reverse().forEach(s => {
+        if (!s.synced) unsynced++;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${s.name}</td>
+          <td>${s.price}</td>
+          <td>${s.qty}</td>
+          <td>${s.total}</td>
+          <td style="color:${s.synced ? 'green' : 'orange'}">${s.synced ? 'Synced' : 'Local Only'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById('unsyncedCount').innerText = unsynced;
+    }
+
+    // Supabase သို့ နောက်ကွယ်မှ ဒေတာပို့ခြင်း (Sync)
+    async function syncOfflineSales() {
+      if (!navigator.onLine) return;
+
+      let localSales = JSON.parse(localStorage.getItem('pos_sales') || '[]');
+      const pendingSales = localSales.filter(s => !s.synced);
+
+      if (pendingSales.length === 0) return;
+
+      for (let s of pendingSales) {
+        const payload = {
+          method: 'cash',
+          items: [{ name: s.name, qty: s.qty, price: s.price }],
+          total: s.total,
+          sub: s.total,
+          disc: 0,
+          tax: 0,
+          paid: s.total,
+          change: 0
+        };
+
+        const { error } = await supabase.from('sales').insert([payload]);
+        if (!error) {
+          s.synced = true;
+        }
+      }
+
+      localStorage.setItem('pos_sales', JSON.stringify(localSales));
+      loadSalesData();
+    }
+
+    updateNetworkStatus();
+  </script>
+</body>
+</html>
