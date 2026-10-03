@@ -1,0 +1,15 @@
+{
+  "name": "POS Myanmar System",
+  "short_name": "POS App",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1170/1170576.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
