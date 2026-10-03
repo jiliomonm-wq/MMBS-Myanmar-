@@ -14,11 +14,12 @@
     .online { color: #16a34a; }
     .offline { color: #dc2626; }
     button { background: #2563eb; color: white; border: none; padding: 10px 14px; border-radius: 6px; cursor: pointer; font-weight: 500; }
-    button:disabled { background: #94a3b8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
     input { width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #cbd5e1; border-radius: 6px; box-sizing: border-box; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; }
     th, td { border: 1px solid #e2e8f0; padding: 8px; text-align: left; font-size: 14px; }
     th { background: #f1f5f9; }
+    .error-box { background: #fee2e2; color: #dc2626; padding: 10px; border-radius: 6px; margin: 10px 0; font-size: 14px; display: none; }
   </style>
 </head>
 <body>
@@ -33,14 +34,18 @@
   <!-- Login Section -->
   <div id="authSection" class="card">
     <h3 style="margin-top:0;">အကောင့်ဝင်ရန်</h3>
+    <div id="loginError" class="error-box"></div>
     <input type="email" id="email" placeholder="အီးမေးလ် ရိုက်ထည့်ပါ">
     <input type="password" id="password" placeholder="စကားဝှက် ရိုက်ထည့်ပါ">
-    <button onclick="login()">Login</button>
+    <button id="loginBtn" onclick="login()">Login</button>
   </div>
 
   <!-- Main POS App Section -->
   <div id="appSection" class="card" style="display:none;">
-    <h3 style="margin-top:0;">အရောင်း စာရင်းသွင်းရန် (POS)</h3>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
+      <h3 style="margin:0;">အရောင်း စာရင်းသွင်းရန် (POS)</h3>
+      <button onclick="logout()" style="background:#ef4444; padding: 6px 10px; font-size: 12px;">Logout</button>
+    </div>
     <div style="display: flex; gap: 8px; margin-bottom: 8px;">
       <input type="text" id="pName" placeholder="ပစ္စည်းအမည်" style="flex: 2;">
       <input type="number" id="pPrice" placeholder="ဈေးနှုန်း" style="flex: 1;">
@@ -71,11 +76,16 @@
     const SUPABASE_URL = "https://kbjjzdkpxvinlgwbhrzp.supabase.co";
     const SUPABASE_ANON_KEY = "sb_publishable_O69tVRXhyHxNz8j5hl48Tg_WLzI6RLZ";
 
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    let supabase;
+    try {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch(e) {
+      console.error("Supabase client init failed:", e);
+    }
 
     // Register Service Worker for PWA / Offline Usage
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js');
+      navigator.serviceWorker.register('./sw.js').catch(err => console.log('SW registration failed:', err));
     }
 
     // Network Status Monitoring
@@ -87,31 +97,77 @@
       if (navigator.onLine) {
         netStatus.innerText = "● Online";
         netStatus.className = "online";
-        syncOfflineSales(); // လိုင်းပြန်ရချိန်တွင် Supabase သို့ အလိုအလျောက် sync ပို့ပေးမည်
+        syncOfflineSales();
       } else {
         netStatus.innerText = "● Offline";
         netStatus.className = "offline";
       }
     }
 
-    // Login Authentication
-    async function login() {
-      const email = document.getElementById('email').value;
-      const password = document.getElementById('password').value;
-      
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        alert("Login မှားယွင်းနေပါသည်: " + error.message);
-      } else {
+    // Session ရှိမရှိ စစ်ဆေးခြင်း
+    async function checkSession() {
+      if (!supabase) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session) {
         document.getElementById('authSection').style.display = 'none';
         document.getElementById('appSection').style.display = 'block';
         loadSalesData();
       }
     }
+    checkSession();
+
+    // Login Authentication
+    async function login() {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value;
+      const errBox = document.getElementById('loginError');
+      const btn = document.getElementById('loginBtn');
+      
+      errBox.style.display = 'none';
+      errBox.innerText = '';
+
+      if (!email || !password) {
+        errBox.innerText = "အီးမေးလ်နှင့် စကားဝှက် အပြည့်အစုံ ရိုက်ထည့်ပါ";
+        errBox.style.display = 'block';
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = "စစ်ဆေးနေပါသည်...";
+
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        
+        if (error) {
+          errBox.innerText = "ဝင်ရောက်မှု မအောင်မြင်ပါ: " + error.message;
+          errBox.style.display = 'block';
+        } else if (data && data.session) {
+          document.getElementById('authSection').style.display = 'none';
+          document.getElementById('appSection').style.display = 'block';
+          loadSalesData();
+        } else {
+          errBox.innerText = "အီးမေးလ်အတည်ပြုရန် လိုအပ်နေပါသည် (Unconfirmed email)";
+          errBox.style.display = 'block';
+        }
+      } catch (err) {
+        errBox.innerText = "ချိတ်ဆက်မှု ပြဿနာ: " + err.message;
+        errBox.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Login";
+      }
+    }
+
+    // Logout လုပ်ခြင်း
+    async function logout() {
+      if (supabase) await supabase.auth.signOut();
+      document.getElementById('authSection').style.display = 'block';
+      document.getElementById('appSection').style.display = 'none';
+    }
 
     // အရောင်းမှတ်တမ်း အရင်ဆုံး ဖုန်းထဲသိမ်းခြင်း (Local-First)
     function recordSale() {
-      const name = document.getElementById('pName').value;
+      const name = document.getElementById('pName').value.trim();
       const price = parseFloat(document.getElementById('pPrice').value) || 0;
       const qty = parseInt(document.getElementById('pQty').value) || 1;
       const total = price * qty;
@@ -167,7 +223,7 @@
 
     // Supabase သို့ နောက်ကွယ်မှ ဒေတာပို့ခြင်း (Sync)
     async function syncOfflineSales() {
-      if (!navigator.onLine) return;
+      if (!navigator.onLine || !supabase) return;
 
       let localSales = JSON.parse(localStorage.getItem('pos_sales') || '[]');
       const pendingSales = localSales.filter(s => !s.synced);
